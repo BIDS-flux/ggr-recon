@@ -27,6 +27,7 @@ then the regularized deconvolution is performed in the Fourier domain.
 - **Scipy**: https://www.scipy.org/
 - **SimpleITK**: https://simpleitk.org/
 - **Rich**: https://rich.readthedocs.io/en/stable/introduction.html
+- **pybids**: https://bids-standard.github.io/pybids/
 - **CRKIT**: http://crl.med.harvard.edu/software/
 
 ## Getting started
@@ -66,86 +67,196 @@ export DYLD_LIBRARY_PATH=""
 ```console
 docker run -it --rm --name ggr crl/ggr-recon preprocess.py -h
 ```
-
-```
-usage: preprocess.py [-h] [-V] [-f FORMAT [FORMAT ...]] [-s SIZE [SIZE ...]]
-                     [-r]
-
-optional arguments:
-  -h, --help            show this help message and exit
-  -V, --version         show version
-  -f FORMAT [FORMAT ...], --format FORMAT [FORMAT ...]
-                        formats of the low-res images, by default is .nii.gz;
-                        no repeated elements included; e.g., -f .nhdr .nrrd
-                        .nii .nii.gz
-  -s SIZE [SIZE ...], --size SIZE [SIZE ...]
-                        size of the high-res reconstruction, optional; 3
-                        positive integers (sagittal coronal axial) required if
-                        set; e.g., -s 312 384 330
-  -r, --resample        resample the first low-res image in the high-res
-                        lattice and then exit. Usually used for determining a
-                        user defined size of the high-res reconstruction
-```
 #### Docker mode
 ```console
 docker run -it --rm --name ggr crl/ggr-recon recon.py -h
 ```
 
-
+#### Docker mode
+```console
+docker run -it --rm --name ggr crl/ggr-recon pipeline.py -h
 ```
-usage: recon.py [-h] [-V] [--ggr | --tik] [-w REG_WEIGHT]
 
-optional arguments:
-  -h, --help            show this help message and exit
-  -V, --version         show version
-  --ggr                 use GGR regularization, default
-  --tik                 use Tikhonov regularization
-  -w REG_WEIGHT, --reg-weight REG_WEIGHT
-                        weight of the regularization, by default is 0.1
+### Repository example data
+This repository ships two example layouts with the same phantom images:
+
+```text
+data/
+├── acr-axial/
+│   ├── ax_t2_phantom.nii.gz
+│   └── ax_t2_phantom.json
+├── acr-coronal/
+│   ├── cor_t2_phantom.nii.gz
+│   └── cor_t2_phantom.json
+└── acr-sagittal/
+    ├── sag_t2_phantom.nii.gz
+    └── sag_t2_phantom.json
+
+data-bids-example/
+├── dataset_description.json
+└── sub-phantom/
+    └── ses-01/
+        └── anat/
+            ├── sub-phantom_ses-01_acq-ax_T2w.nii.gz
+            ├── sub-phantom_ses-01_acq-ax_T2w.json
+            ├── sub-phantom_ses-01_acq-cor_T2w.nii.gz
+            ├── sub-phantom_ses-01_acq-cor_T2w.json
+            ├── sub-phantom_ses-01_acq-sag_T2w.nii.gz
+            └── sub-phantom_ses-01_acq-sag_T2w.json
 ```
 
 ### Input and output
-GGR-recon requires the input low-res images to be put at the folder of name *data* in the root of the code tree. GGR-recon detects all available low-res images and uses them to reconstruct the high-res image. In the docker mode, the *data* folder can be anywhere and needs to be mounted in the container by the *-v* argument when running the docker container. Note that absolute paths are required in the mounting.
-```console
--v /your/data/folder:/opt/GGR-recon/data
-```
-The intermediate and final results are placed in the folders of *working* and *recons*, respectively, which are created by GGR-recon itself. In the docker mode, these folders are required to be mounted as well to receive the results, similar to the input folder.
+`preprocess.py` supports:
 
-For instance, running the **preprocessing** step with the default setting in the docker mode can be accomplished by
+1. BIDS auto-discovery using `pybids` (`--path` + optional `--bids-filter KEY=VALUE`)
+2. Explicit input files with `-f/--filenames` (legacy non-BIDS mode)
+
+For BIDS mode, pass the dataset root with `--path`. A reconstructable group requires a complete `acq-{sag,cor,ax}` set with suffix `T2w` (`.nii` or `.nii.gz`) within a single BIDS entity group. Additional entities (`run`, `rec`, `desc`, and others) are supported and used for grouping.
+
+Intermediate files are written to `--temp_path` (default: `/opt/GGR-recon/temp/`).
+Final outputs are written under `--out_path` in the matching anatomical folder:
+
+`sub-xxx[/ses-xx]/anat/`
+
+Output naming:
+
+- `acq-*` and existing `rec-*` are removed from the input stem
+- `rec-superesolution` is inserted before `_T2w`
+- a sidecar JSON is created next to the output NIfTI
+
+Example:
+
+- input: `sub-001_ses-01_run-1_acq-sag_T2w.nii.gz`
+- output: `sub-001_ses-01_run-1_rec-superesolution_T2w.nii.gz`
+
+If source inputs are split by `rec-*` (for example `rec-filtered` and `rec-orig`), the source `rec` value is copied into `acq-*` to avoid output collisions:
+
+- `..._acq-sag_rec-filtered_T2w.nii.gz` -> `..._acq-filtered_rec-superesolution_T2w.nii.gz`
+- `..._acq-sag_rec-orig_T2w.nii.gz` -> `..._acq-orig_rec-superesolution_T2w.nii.gz`
+
+Run preprocessing only:
+
 ```console
 docker run -it --rm --name ggr-recon \
-  -v /your/data/folder:/opt/GGR-recon/data \
-  -v /your/working/folder:/opt/GGR-recon/working \
-  -v /your/recons/folder:/opt/GGR-recon/recons \
-  your-ggr-tag preprocess.py
+  -v /your/bids:/bids \
+  -v /your/temp:/temp \
+  crl/ggr-recon preprocess.py \
+  --path /bids --temp_path /temp --out_path /bids \
+  --bids-filter subject=001 --bids-filter session=01
 ```
 
-Another example is to run in the docker mode the **deconvolution** step with the GGR regularization that is weighted by 0.03
+You can also define BIDS filters in a JSON file (nested BIDS-app style):
+
+```json
+{
+  "t2w": {
+    "datatype": "anat",
+    "suffix": "T2w",
+    "reconstruction": "filtered",
+    "run": "1",
+    "desc": "denoised"
+  }
+}
+```
+
+Then run preprocessing with `--bids-filter-file`:
+
 ```console
 docker run -it --rm --name ggr-recon \
-  -v /your/data/folder:/opt/GGR-recon/data \
-  -v /your/working/folder:/opt/GGR-recon/working \
-  -v /your/recons/folder:/opt/GGR-recon/recons \
-  your-ggr-tag recon.py --ggr -w 0.03
+  -v /your/bids:/bids \
+  -v /your/temp:/temp \
+  -v /your/filter.json:/filter.json \
+  crl/ggr-recon preprocess.py \
+  --path /bids --temp_path /temp --out_path /bids \
+  --bids-filter-file /filter.json
 ```
 
-### Example reconstruction with phantom data
-The example data in the repository is an MRI scan of a phantom.
+Run reconstruction only:
 
-#### First preprocess the input data
 ```console
-docker run --rm -it  --volume `pwd`:/data   crl/ggr-recon \
-  preprocess.py --path /data/ --working_path /data/working/  \
-  --out_path /data/recons/ \
-  --filename /data/acr-axial/ax_t2_phantom.nii.gz /data/acr-coronal/cor_t2_phantom.nii.gz /data/acr-sagittal/sag_t2_phantom.nii.gz
+docker run --rm -it \
+  -v /your/temp:/temp \
+  -v /your/bids:/bids \
+  crl/ggr-recon recon.py \
+  --temp_path /temp --out_path /bids --ggr -w 0.03
 ```
 
-#### Second reconstruct the superresolution output
+Run preprocessing + reconstruction with `pipeline.py`:
+
 ```console
-docker run --rm -it  --volume `pwd`:/opt/GGR-recon/data \
-  --volume `pwd`/working:/opt/GGR-recon/working \
-  --volume `pwd`/recons:/opt/GGR-recon/recons  \
-  crl/ggr-recon   recon.py --ggr -w 0.03
+docker run --rm -it \
+  -v /your/bids:/bids \
+  -v /your/temp:/temp \
+  crl/ggr-recon pipeline.py \
+  --path /bids --temp_path /temp --out_path /bids \
+  --bids-filter subject=2983 --bids-filter session=1a \
+  -- --ggr -w 0.03
+```
+
+`pipeline.py` also supports direct BIDS-App style selectors:
+
+- `--participant-label` (maps to subject filter)
+- `--session-label` (maps to session filter)
+
+These can be used instead of `--bids-filter subject=...` and `--bids-filter session=...`:
+
+```console
+docker run --rm -it \
+  -v /your/bids:/bids \
+  -v /your/temp:/temp \
+  crl/ggr-recon pipeline.py \
+  --path /bids --temp_path /temp --out_path /bids \
+  --participant-label 2983 --session-label 1a \
+  -- --ggr -w 0.03
+```
+
+`pipeline.py` also supports `--bids-filter-file` with the same nested JSON format:
+
+```console
+docker run --rm -it \
+  -v /your/bids:/bids \
+  -v /your/temp:/temp \
+  -v /your/filter.json:/filter.json \
+  crl/ggr-recon pipeline.py \
+  --path /bids --temp_path /temp --out_path /bids \
+  --bids-filter-file /filter.json \
+  -- --ggr -w 0.03
+```
+
+Both label options accept multiple values (space-separated and/or repeated). If `--bids-filter-file` and `--bids-filter` define the same key, values from `--bids-filter-file` are used. If label options and equivalent subject/session filters are both provided, labels take precedence in `pipeline.py` for subject/session. In explicit filename mode (`-f/--filenames`), labels and `--bids-filter-file` are ignored and `pipeline.py` prints a warning.
+
+When no explicit `-f/--filenames` is provided, `pipeline.py` reconstructs all complete BIDS groups that match your filters. If you do not pass a `rec` filter, all matching `rec-*` groups are processed.
+
+### BIDS phantom example
+Run the bundled BIDS example directly from this repository:
+
+```console
+docker run --rm -it \
+  -v `pwd`/data-bids-example:/bids \
+  -v `pwd`/temp:/temp \
+  crl/ggr-recon pipeline.py \
+  --path /bids --temp_path /temp --out_path /bids \
+  --bids-filter subject=phantom --bids-filter session=01 \
+  -- --ggr -w 0.03
+```
+
+This writes:
+
+- `data-bids-example/sub-phantom/ses-01/anat/sub-phantom_ses-01_rec-superesolution_T2w.nii.gz`
+- `data-bids-example/sub-phantom/ses-01/anat/sub-phantom_ses-01_rec-superesolution_T2w.json`
+
+### Non-BIDS phantom example
+The original `data/` folder is still usable with explicit `-f` inputs:
+
+```console
+docker run --rm -it --volume `pwd`:/data crl/ggr-recon \
+  preprocess.py --temp_path /data/temp --out_path /data/recons \
+  -f /data/data/acr-axial/ax_t2_phantom.nii.gz /data/data/acr-coronal/cor_t2_phantom.nii.gz /data/data/acr-sagittal/sag_t2_phantom.nii.gz
+
+docker run --rm -it \
+  --volume `pwd`/temp:/opt/GGR-recon/temp \
+  --volume `pwd`/recons:/opt/GGR-recon/recons \
+  crl/ggr-recon recon.py --temp_path /opt/GGR-recon/temp --out_path /opt/GGR-recon/recons --ggr -w 0.03
 ```
 
 ### Baseline implementation

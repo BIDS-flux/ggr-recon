@@ -1,0 +1,5 @@
+{
+  "Name": "GGR-recon phantom BIDS example",
+  "BIDSVersion": "1.9.0",
+  "DatasetType": "raw"
+}
