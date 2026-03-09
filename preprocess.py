@@ -98,6 +98,56 @@ def parse_bids_filters(raw_filters):
 			parsed[key] = value
 	return parsed
 
+def normalize_filter_key(key):
+	key = str(key).strip()
+	if key == '':
+		return None
+	return FILTER_KEY_ALIASES.get(key, key)
+
+def normalize_filter_value(value):
+	if isinstance(value, list):
+		items = []
+		for item in value:
+			if isinstance(item, (dict, list)) or item is None:
+				raise ValueError('invalid filter value type in --bids-filter-file: %s' % type(item).__name__)
+			text = str(item).strip()
+			if text != '':
+				items.append(text)
+		if len(items) == 0:
+			raise ValueError('empty list value in --bids-filter-file is not allowed')
+		return items
+	if isinstance(value, dict) or value is None:
+		raise ValueError('invalid filter value type in --bids-filter-file: %s' % type(value).__name__)
+	text = str(value).strip()
+	if text == '':
+		raise ValueError('empty filter value in --bids-filter-file is not allowed')
+	return text
+
+def load_bids_filters_from_file(path):
+	try:
+		with open(path, 'r') as f:
+			data = json.load(f)
+	except OSError as exc:
+		raise ValueError('could not read --bids-filter-file "%s": %s' % (path, str(exc)))
+	except ValueError as exc:
+		raise ValueError('invalid JSON in --bids-filter-file "%s": %s' % (path, str(exc)))
+
+	if not isinstance(data, dict):
+		raise ValueError('--bids-filter-file must contain a JSON object')
+	if 't2w' not in data:
+		raise ValueError('--bids-filter-file must contain a top-level "t2w" object')
+	block = data.get('t2w')
+	if not isinstance(block, dict):
+		raise ValueError('the "t2w" value in --bids-filter-file must be a JSON object')
+
+	parsed = {}
+	for raw_key, raw_value in block.items():
+		key = normalize_filter_key(raw_key)
+		if key is None:
+			raise ValueError('invalid empty key in --bids-filter-file')
+		parsed[key] = normalize_filter_value(raw_value)
+	return parsed
+
 def group_key_from_entities(entities):
 	items = []
 	for key, value in entities.items():
@@ -350,6 +400,8 @@ parser.add_argument('-t', '--temp_path', '-w', '--working_path',
 parser.add_argument('-o', '--out_path', default='/opt/GGR-recon/recons/')
 parser.add_argument('--bids-filter', action='append', default=[],
 		help='additional pybids filters for automatic discovery, as KEY=VALUE (repeatable)')
+parser.add_argument('--bids-filter-file',
+		help='path to nested JSON filters (expects top-level "t2w" object)')
 args = parser.parse_args()
 flist = args.filenames
 sz = args.size
@@ -360,11 +412,17 @@ working_path = ensure_dir(args.temp_path)
 out_path = ensure_dir(args.out_path)
 
 bids_filters = {}
-try:
-	bids_filters = parse_bids_filters(args.bids_filter)
-except ValueError as exc:
-	print('Error:', str(exc))
-	sys.exit(1)
+if flist is not None and len(flist) > 0 and args.bids_filter_file is not None:
+	print('Warning: --bids-filter-file is ignored when -f/--filenames is used.')
+else:
+	try:
+		bids_filters = parse_bids_filters(args.bids_filter)
+		if args.bids_filter_file is not None:
+			file_filters = load_bids_filters_from_file(args.bids_filter_file)
+			bids_filters.update(file_filters)
+	except ValueError as exc:
+		print('Error:', str(exc))
+		sys.exit(1)
 
 bids_info = None
 if flist is None or len(flist) == 0:

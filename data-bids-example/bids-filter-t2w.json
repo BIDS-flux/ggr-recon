@@ -1,0 +1,8 @@
+{
+  "t2w": {
+    "subject": "phantom",
+    "session": "01",
+    "datatype": "anat",
+    "suffix": "T2w"
+  }
+}

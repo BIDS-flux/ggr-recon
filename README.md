@@ -145,6 +145,32 @@ docker run -it --rm --name ggr-recon \
   --bids-filter subject=001 --bids-filter session=01
 ```
 
+You can also define BIDS filters in a JSON file (nested BIDS-app style):
+
+```json
+{
+  "t2w": {
+    "datatype": "anat",
+    "suffix": "T2w",
+    "reconstruction": "filtered",
+    "run": "1",
+    "desc": "denoised"
+  }
+}
+```
+
+Then run preprocessing with `--bids-filter-file`:
+
+```console
+docker run -it --rm --name ggr-recon \
+  -v /your/bids:/bids \
+  -v /your/temp:/temp \
+  -v /your/filter.json:/filter.json \
+  crl/ggr-recon preprocess.py \
+  --path /bids --temp_path /temp --out_path /bids \
+  --bids-filter-file /filter.json
+```
+
 Run reconstruction only:
 
 ```console
@@ -184,7 +210,20 @@ docker run --rm -it \
   -- --ggr -w 0.03
 ```
 
-Both label options accept multiple values (space-separated and/or repeated). If label options and equivalent `--bids-filter` entries are both provided, labels take precedence for subject/session. In explicit filename mode (`-f/--filenames`), labels are ignored and `pipeline.py` prints a warning.
+`pipeline.py` also supports `--bids-filter-file` with the same nested JSON format:
+
+```console
+docker run --rm -it \
+  -v /your/bids:/bids \
+  -v /your/temp:/temp \
+  -v /your/filter.json:/filter.json \
+  crl/ggr-recon pipeline.py \
+  --path /bids --temp_path /temp --out_path /bids \
+  --bids-filter-file /filter.json \
+  -- --ggr -w 0.03
+```
+
+Both label options accept multiple values (space-separated and/or repeated). If `--bids-filter-file` and `--bids-filter` define the same key, values from `--bids-filter-file` are used. If label options and equivalent subject/session filters are both provided, labels take precedence in `pipeline.py` for subject/session. In explicit filename mode (`-f/--filenames`), labels and `--bids-filter-file` are ignored and `pipeline.py` prints a warning.
 
 When no explicit `-f/--filenames` is provided, `pipeline.py` reconstructs all complete BIDS groups that match your filters. If you do not pass a `rec` filter, all matching `rec-*` groups are processed.
 

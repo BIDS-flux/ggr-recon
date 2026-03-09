@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import json
 import os
 import shlex
 import subprocess
@@ -36,6 +37,7 @@ def print_help():
 	print('Pipeline-owned options:')
 	print('  --participant-label LABEL [LABEL ...]  map to --bids-filter subject=...')
 	print('  --session-label LABEL [LABEL ...]      map to --bids-filter session=...')
+	print('  --bids-filter-file FILE                nested BIDS filter JSON with a top-level "t2w" block')
 	print('')
 	print('Examples:')
 	print('  pipeline.py --path /data --temp_path /temp --out_path /bids')
@@ -46,8 +48,9 @@ def print_help():
 	print('Notes:')
 	print('  - If "--" is omitted, no extra args are passed to recon.py (defaults are used).')
 	print('  - If no explicit -f/--filenames is provided, pipeline runs all complete BIDS groups matching filters.')
+	print('  - In --bids-filter-file conflicts, file values override --bids-filter values.')
 	print('  - participant/session labels override subject/session values from --bids-filter.')
-	print('  - In -f/--filenames mode, participant/session labels are ignored with a warning.')
+	print('  - In -f/--filenames mode, participant/session labels and --bids-filter-file are ignored with a warning.')
 	print('  - All original preprocess.py and recon.py arguments are supported via passthrough.')
 
 
@@ -71,10 +74,61 @@ def parse_pipeline_options(preprocess_args):
 	parser = argparse.ArgumentParser(add_help=False)
 	parser.add_argument('--participant-label', action='append', nargs='+', default=[])
 	parser.add_argument('--session-label', action='append', nargs='+', default=[])
+	parser.add_argument('--bids-filter-file')
 	parsed, remaining = parser.parse_known_args(preprocess_args)
 	participants = flatten_label_values(parsed.participant_label)
 	sessions = flatten_label_values(parsed.session_label)
-	return remaining, participants, sessions
+	return remaining, participants, sessions, parsed.bids_filter_file
+
+def normalize_filter_key(key):
+	key = str(key).strip()
+	if key == '':
+		return None
+	return FILTER_KEY_ALIASES.get(key, key)
+
+def normalize_filter_value(value):
+	if isinstance(value, list):
+		items = []
+		for item in value:
+			if isinstance(item, (dict, list)) or item is None:
+				raise ValueError('invalid filter value type in --bids-filter-file: %s' % type(item).__name__)
+			text = str(item).strip()
+			if text != '':
+				items.append(text)
+		if len(items) == 0:
+			raise ValueError('empty list value in --bids-filter-file is not allowed')
+		return items
+	if isinstance(value, dict) or value is None:
+		raise ValueError('invalid filter value type in --bids-filter-file: %s' % type(value).__name__)
+	text = str(value).strip()
+	if text == '':
+		raise ValueError('empty filter value in --bids-filter-file is not allowed')
+	return text
+
+def load_bids_filters_from_file(path):
+	try:
+		with open(path, 'r') as f:
+			data = json.load(f)
+	except OSError as exc:
+		raise ValueError('could not read --bids-filter-file "%s": %s' % (path, str(exc)))
+	except ValueError as exc:
+		raise ValueError('invalid JSON in --bids-filter-file "%s": %s' % (path, str(exc)))
+
+	if not isinstance(data, dict):
+		raise ValueError('--bids-filter-file must contain a JSON object')
+	if 't2w' not in data:
+		raise ValueError('--bids-filter-file must contain a top-level "t2w" object')
+	block = data.get('t2w')
+	if not isinstance(block, dict):
+		raise ValueError('the "t2w" value in --bids-filter-file must be a JSON object')
+
+	parsed = {}
+	for raw_key, raw_value in block.items():
+		key = normalize_filter_key(raw_key)
+		if key is None:
+			raise ValueError('invalid empty key in --bids-filter-file')
+		parsed[key] = normalize_filter_value(raw_value)
+	return parsed
 
 def parse_preprocess_path(args):
 	path = '/opt/GGR-recon/data/'
@@ -185,6 +239,18 @@ def apply_label_filters(preprocess_args, participant_labels, session_labels):
 		args += ['--bids-filter', 'subject=%s' % ','.join(participant_labels)]
 	if len(session_labels) > 0:
 		args += ['--bids-filter', 'session=%s' % ','.join(session_labels)]
+	return args
+
+def apply_file_filters(preprocess_args, file_filters):
+	args = list(preprocess_args)
+	if len(file_filters) == 0:
+		return args
+	args = remove_bids_filter_keys(args, set(file_filters.keys()))
+	for key, value in file_filters.items():
+		if isinstance(value, list):
+			args += ['--bids-filter', '%s=%s' % (key, ','.join(value))]
+		else:
+			args += ['--bids-filter', '%s=%s' % (key, value)]
 	return args
 
 def group_key_from_entities(entities):
@@ -309,11 +375,20 @@ def main():
 		return 0
 
 	preprocess_args, recon_args = split_passthrough_args(argv)
-	preprocess_args, participant_labels, session_labels = parse_pipeline_options(preprocess_args)
+	preprocess_args, participant_labels, session_labels, bids_filter_file = parse_pipeline_options(preprocess_args)
 	if has_filenames_arg(preprocess_args):
 		if len(participant_labels) > 0 or len(session_labels) > 0:
 			print('[pipeline] warning: --participant-label/--session-label are ignored when -f/--filenames is used.')
+		if bids_filter_file is not None:
+			print('[pipeline] warning: --bids-filter-file is ignored when -f/--filenames is used.')
 	else:
+		if bids_filter_file is not None:
+			try:
+				file_filters = load_bids_filters_from_file(bids_filter_file)
+			except ValueError as exc:
+				print('Error:', str(exc))
+				return 1
+			preprocess_args = apply_file_filters(preprocess_args, file_filters)
 		preprocess_args = apply_label_filters(preprocess_args, participant_labels, session_labels)
 	# Expand into all matching groups unless explicit filenames are provided.
 	# This includes cases with filters (e.g., subject/session without rec).
