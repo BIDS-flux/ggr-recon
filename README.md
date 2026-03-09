@@ -167,6 +167,25 @@ docker run --rm -it \
   -- --ggr -w 0.03
 ```
 
+`pipeline.py` also supports direct BIDS-App style selectors:
+
+- `--participant-label` (maps to subject filter)
+- `--session-label` (maps to session filter)
+
+These can be used instead of `--bids-filter subject=...` and `--bids-filter session=...`:
+
+```console
+docker run --rm -it \
+  -v /your/bids:/bids \
+  -v /your/temp:/temp \
+  crl/ggr-recon pipeline.py \
+  --path /bids --temp_path /temp --out_path /bids \
+  --participant-label 2983 --session-label 1a \
+  -- --ggr -w 0.03
+```
+
+Both label options accept multiple values (space-separated and/or repeated). If label options and equivalent `--bids-filter` entries are both provided, labels take precedence for subject/session. In explicit filename mode (`-f/--filenames`), labels are ignored and `pipeline.py` prints a warning.
+
 When no explicit `-f/--filenames` is provided, `pipeline.py` reconstructs all complete BIDS groups that match your filters. If you do not pass a `rec` filter, all matching `rec-*` groups are processed.
 
 ### BIDS phantom example

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import argparse
 import os
 import shlex
 import subprocess
@@ -32,15 +33,21 @@ def print_help():
 	print('Runs preprocess.py first, then recon.py.')
 	print('Arguments before "--" are passed to preprocess.py.')
 	print('Arguments after "--" are passed to recon.py.')
+	print('Pipeline-owned options:')
+	print('  --participant-label LABEL [LABEL ...]  map to --bids-filter subject=...')
+	print('  --session-label LABEL [LABEL ...]      map to --bids-filter session=...')
 	print('')
 	print('Examples:')
 	print('  pipeline.py --path /data --temp_path /temp --out_path /bids')
 	print('  pipeline.py --path /data --temp_path /temp --out_path /bids \\')
 	print('    --bids-filter subject=2983 --bids-filter rec=filtered -- --ggr -w 0.03')
+	print('  pipeline.py --path /data --participant-label 2983 --session-label 1a -- --ggr -w 0.03')
 	print('')
 	print('Notes:')
 	print('  - If "--" is omitted, no extra args are passed to recon.py (defaults are used).')
 	print('  - If no explicit -f/--filenames is provided, pipeline runs all complete BIDS groups matching filters.')
+	print('  - participant/session labels override subject/session values from --bids-filter.')
+	print('  - In -f/--filenames mode, participant/session labels are ignored with a warning.')
 	print('  - All original preprocess.py and recon.py arguments are supported via passthrough.')
 
 
@@ -49,6 +56,25 @@ def split_passthrough_args(argv):
 		sep = argv.index('--')
 		return argv[:sep], argv[sep + 1:]
 	return argv, []
+
+def flatten_label_values(values):
+	flat = []
+	for chunk in values or []:
+		items = chunk if isinstance(chunk, (list, tuple)) else [chunk]
+		for item in items:
+			value = str(item).strip()
+			if value != '' and value not in flat:
+				flat.append(value)
+	return flat
+
+def parse_pipeline_options(preprocess_args):
+	parser = argparse.ArgumentParser(add_help=False)
+	parser.add_argument('--participant-label', action='append', nargs='+', default=[])
+	parser.add_argument('--session-label', action='append', nargs='+', default=[])
+	parsed, remaining = parser.parse_known_args(preprocess_args)
+	participants = flatten_label_values(parsed.participant_label)
+	sessions = flatten_label_values(parsed.session_label)
+	return remaining, participants, sessions
 
 def parse_preprocess_path(args):
 	path = '/opt/GGR-recon/data/'
@@ -117,6 +143,49 @@ def parse_filter_key_value(raw):
 	if ',' in value:
 		value = [v.strip() for v in value.split(',') if v.strip() != '']
 	return key, value
+
+def remove_bids_filter_keys(args, keys_to_remove):
+	out = []
+	ii = 0
+	while ii < len(args):
+		token = args[ii]
+		if token == '--bids-filter':
+			if ii + 1 < len(args):
+				raw = args[ii + 1]
+				key, _ = parse_filter_key_value(raw)
+				if key in keys_to_remove:
+					ii += 2
+					continue
+				out += [token, raw]
+				ii += 2
+				continue
+			out.append(token)
+			ii += 1
+			continue
+		if token.startswith('--bids-filter='):
+			raw = token.split('=', 1)[1]
+			key, _ = parse_filter_key_value(raw)
+			if key in keys_to_remove:
+				ii += 1
+				continue
+		out.append(token)
+		ii += 1
+	return out
+
+def apply_label_filters(preprocess_args, participant_labels, session_labels):
+	args = list(preprocess_args)
+	remove_keys = set()
+	if len(participant_labels) > 0:
+		remove_keys.add('subject')
+	if len(session_labels) > 0:
+		remove_keys.add('session')
+	if len(remove_keys) > 0:
+		args = remove_bids_filter_keys(args, remove_keys)
+	if len(participant_labels) > 0:
+		args += ['--bids-filter', 'subject=%s' % ','.join(participant_labels)]
+	if len(session_labels) > 0:
+		args += ['--bids-filter', 'session=%s' % ','.join(session_labels)]
+	return args
 
 def group_key_from_entities(entities):
 	items = []
@@ -240,7 +309,12 @@ def main():
 		return 0
 
 	preprocess_args, recon_args = split_passthrough_args(argv)
-	raw_filters = extract_bids_filters(preprocess_args)
+	preprocess_args, participant_labels, session_labels = parse_pipeline_options(preprocess_args)
+	if has_filenames_arg(preprocess_args):
+		if len(participant_labels) > 0 or len(session_labels) > 0:
+			print('[pipeline] warning: --participant-label/--session-label are ignored when -f/--filenames is used.')
+	else:
+		preprocess_args = apply_label_filters(preprocess_args, participant_labels, session_labels)
 	# Expand into all matching groups unless explicit filenames are provided.
 	# This includes cases with filters (e.g., subject/session without rec).
 	should_expand_groups = not has_filenames_arg(preprocess_args)
